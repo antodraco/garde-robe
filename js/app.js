@@ -333,6 +333,7 @@ function tenueCard(slot, tenue, w, week) {
   card.append(h('div', { class: 'row wrap' },
     button(tenue.porte ? 'Portée' : 'Je l’ai portée', { kind: tenue.porte ? 'tonal' : 'outlined', ic: tenue.porte ? 'check_circle' : 'radio_button_unchecked',
       onclick: () => toggleWorn(week, tenue) }),
+    past ? null : button('Modifier avec l’IA', { kind: 'tonal', ic: 'edit_note', onclick: () => editWithAI(week, slot, tenue) }),
     past ? null : button('Autre tenue', { kind: 'text', ic: 'autorenew', onclick: () => runGeneration(week, [slot.key]) }),
     button('Agenda', { kind: 'text', ic: 'event', onclick: () => window.open(calendarUrl(tenue), '_blank', 'noopener') })));
   return card;
@@ -377,11 +378,11 @@ async function historyBefore(weekStart) {
     .filter(x => x.itemIds?.length).slice(-12);
 }
 
-async function runGeneration(week, keys) {
+async function runGeneration(week, keys, { instruction } = {}) {
   if (state.busy) return;
   state.busy = true;
   const list = document.querySelector('.days');
-  list?.prepend(loader('Le styliste compose ta semaine…'));
+  list?.prepend(loader(instruction ? 'Le styliste modifie ta tenue…' : 'Le styliste compose ta semaine…'));
   document.querySelectorAll('.gen-card button, .day-card button').forEach(b => { b.disabled = true; });
   try {
     const weather = state._weather && Object.keys(state._weather).length ? state._weather
@@ -393,6 +394,7 @@ async function runGeneration(week, keys) {
     const { tenues, problems } = await generateOutfits({
       settings: state.settings, profile: state.profile, items: state.items, slots, weather,
       history: await historyBefore(week.weekStart), fixed, weekNote: week.note,
+      instruction, current: instruction ? week.tenues.filter(x => keys.includes(x.key)).map(x => ({ key: x.key, itemIds: x.itemIds })) : undefined,
     });
     if (!tenues.length) throw new AIError('Aucune tenue reçue. Réessaie.');
     for (const nt of tenues) {
@@ -403,16 +405,45 @@ async function runGeneration(week, keys) {
     // Les tenues hors du découpage actuel (après un changement d'organisation) sont remplacées.
     week.tenues = week.tenues.filter(x => allSlots.some(s => s.key === x.key && s.dates.join() === x.dates.join()));
     week.tenues.sort((a, b) => a.dates[0].localeCompare(b.dates[0]));
-    week.sac = [];
+    // Une simple modification garde les cases du sac déjà cochées pour les pièces toujours présentes.
+    week.sac = instruction ? (week.sac || []).filter(id => week.tenues.some(t => t.itemIds.includes(id))) : [];
     week.generatedAt = new Date().toISOString();
     await saveWeek(week);
-    snackbar(problems.length ? 'Tenues prêtes (quelques règles non respectées : vérifie-les).' : 'Ta semaine est prête ✨');
+    snackbar(instruction ? 'Tenue modifiée ✨' : problems.length ? 'Tenues prêtes (quelques règles non respectées : vérifie-les).' : 'Ta semaine est prête ✨');
   } catch (e) {
     snackbar(errorText(e), { duration: 7000 });
   } finally {
     state.busy = false;
     rerender();
   }
+}
+
+// Modifier une tenue en langage naturel (« j'ai déjà porté cette chemise », « plus habillé pour la messe »…).
+function editWithAI(week, slot, tenue) {
+  if (!state.settings.apiKey) { snackbar('Ajoute d’abord ta clé Gemini dans Profil.'); return; }
+  const items = byId();
+  const ta = h('textarea', { rows: 3, placeholder: 'Ex. j’ai déjà porté cette chemise la semaine dernière, propose-m’en une autre' });
+  const pieces = tenue.itemIds.map(id => items[id]).filter(Boolean);
+  const chip = (label, text) => h('button', { type: 'button', class: 'chip', onclick: () => { ta.value = ta.value ? ta.value.replace(/\s*$/, '') + ' ; ' + text : text; ta.focus(); } }, label);
+  const nom = (i) => i.nom.charAt(0).toLowerCase() + i.nom.slice(1);
+  const go = () => {
+    const txt = ta.value.trim();
+    if (!txt) { ta.focus(); return; }
+    layer.close();
+    runGeneration(week, [slot.key], { instruction: txt });
+  };
+  const body = h('div', { class: 'form' },
+    h('p', { class: 'muted small' }, 'Dis au styliste ce que tu veux changer. Il garde le reste de la tenue.'),
+    h('div', { class: 'chips' },
+      pieces.filter(i => ['haut', 'maille'].includes(groupOf(i.categorie))).map(i => chip(`Déjà porté : ${i.nom.split(' ').slice(0, 3).join(' ')}…`, `j’ai déjà porté ${nom(i)} récemment, propose-m’en un autre`)),
+      chip('Plus chaud', 'il va faire plus froid que prévu, rends la tenue plus chaude'),
+      chip('Plus habillé', 'il me faut une tenue plus habillée (messe, oral)'),
+      chip('Plus décontracté', 'rends la tenue plus décontractée'),
+      chip('Autres couleurs', 'garde les mêmes types de pièces mais propose d’autres couleurs')),
+    h('label', { class: 'field' }, h('span', {}, 'Ta demande'), ta),
+    button('Modifier la tenue', { ic: 'auto_awesome', cls: 'wide', onclick: go }));
+  const layer = sheet({ title: 'Modifier « ' + cleanAI(tenue.titre) + ' »', body });
+  setTimeout(() => ta.focus(), 300);
 }
 
 async function setWear(ids, dates, on) {

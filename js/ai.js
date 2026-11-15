@@ -211,7 +211,7 @@ const OUTFITS_SCHEMA = OBJ({
 const JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
 export const dayName = (iso) => JOURS[new Date(iso + 'T12:00:00').getDay()];
 
-export async function generateOutfits({ settings, profile, items, slots, weather, history, fixed, weekNote }) {
+export async function generateOutfits({ settings, profile, items, slots, weather, history, fixed, weekNote, current, instruction }) {
   const wardrobe = items.filter(i => i.statut === 'garde');
   const available = new Set(wardrobe.map(i => groupOf(i.categorie)));
   const byId = Object.fromEntries(wardrobe.map(i => [i.id, i]));
@@ -246,7 +246,7 @@ ${wardrobe.map(i => itemLine(i)).join('\n')}
 TENUES À COMPOSER (clé : période, puis météo jour par jour)
 ${slotText}
 ${fixedText ? `\nTENUES DÉJÀ CHOISIES CETTE SEMAINE (ne pas répéter leurs hauts)\n${fixedText}\n` : ''}
-${weekNote ? `\nREMARQUES POUR CETTE SEMAINE\n${weekNote}\n` : ''}
+${weekNote ? `\nREMARQUES POUR CETTE SEMAINE\n${weekNote}\n` : ''}${instruction && current?.length ? `\nTENUE ACTUELLE À MODIFIER\n${current.map(c => `${c.key} : ${c.itemIds.map(id => byId[id] ? `${id} (${byId[id].nom})` : id).join(', ')}`).join('\n')}\n\nDEMANDE DE L'UTILISATEUR (PRIORITAIRE)\n« ${instruction} »\nApplique exactement cette demande. Garde toutes les pièces de la tenue actuelle qu'elle ne remet pas en cause ; ne change que ce qui est nécessaire, en restant cohérent (couleurs, météo, formalité). Si une pièce est dite « déjà portée » ou à éviter, ne la remets pas. Dans l'explication, dis en une phrase ce que tu as changé et pourquoi.\n` : ''}
 HISTORIQUE RÉCENT (période : pièces)
 ${hist}
 
