@@ -18,7 +18,7 @@ import { applyTheme as applyDynamicTheme, seedsFromImage, DEFAULT_SEED, PRESETS 
 const DEFAULT_SETTINGS = {
   apiKey: '', model: DEFAULT_MODEL, theme: 'auto', searchPrices: true, seedColor: DEFAULT_SEED, wallpaperSeeds: [],
   autoWeek: true, driveClientId: '', driveAuto: true,
-  lieu: { name: 'Strasbourg', detail: 'Bas-Rhin, Grand Est, France', lat: 48.5734, lon: 7.7521 },
+  lieu: { name: 'Paris', detail: 'Île-de-France, France', lat: 48.8566, lon: 2.3522 },
 };
 
 const DEFAULT_FILTER = { group: 'all', statut: 'garde', q: '' };
@@ -341,7 +341,7 @@ function bagCard(week, slots) {
   const packed = new Set(week.sac);
   const count = h('span', { class: 'muted small' }, `${ids.filter(id => packed.has(id)).length}/${ids.length}`);
   return h('section', { class: 'card' },
-    h('h3', {}, icon('luggage'), ' Dans le sac pour Strasbourg ', count),
+    h('h3', {}, icon('luggage'), ` Dans le sac pour ${state.settings.lieu?.name || 'la semaine'} `, count),
     h('p', { class: 'muted small' }, 'Les pièces des tenues de la semaine, à cocher en faisant ton sac.'),
     h('ul', { class: 'checklist bag' }, ids.map(id => {
       const cb = h('input', { type: 'checkbox', checked: packed.has(id), onchange: async () => {
@@ -1136,7 +1136,7 @@ async function openListing(item) {
         a.justificationPrix ? h('p', { class: 'small' }, a.justificationPrix) : null,
         h('p', { class: 'muted small' }, a.rechercheEnLigne ? 'Estimation appuyée sur une recherche en ligne.' : 'Estimation de l’IA sans recherche en ligne : vérifie 2 ou 3 annonces similaires sur Vinted avant de publier.'),
         a.sources?.length ? h('details', {}, h('summary', {}, `Sources (${a.sources.length})`),
-          h('ul', {}, a.sources.slice(0, 8).map(s => h('li', {}, h('a', { href: s.uri, target: '_blank', rel: 'noopener' }, s.title))))) : null),
+          h('ul', {}, a.sources.filter(s => /^https:\/\//i.test(s.uri || '')).slice(0, 8).map(s => h('li', {}, h('a', { href: s.uri, target: '_blank', rel: 'noopener noreferrer' }, s.title))))) : null),
       h('label', { class: 'field' }, h('span', {}, 'Titre ', counter), h('div', { class: 'with-action' }, titleIn, iconButton('content_copy', 'Copier le titre', () => copyText(a.titre)))),
       a.titreTronque ? h('p', { class: 'muted small' }, 'Titre raccourci à 50 caractères (limite Vinted).') : null,
       h('label', { class: 'field' }, h('span', {}, 'Description'), descIn),
@@ -1320,7 +1320,17 @@ function renderProfil() {
 
 /* ------------------------------------------- Sauvegarde (fichier et Google Drive) */
 const blobToDataURL = (blob) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
-const dataURLToBlob = async (u) => (await fetch(u)).blob();
+// Décodage local (sans fetch : la politique de sécurité de la page interdit fetch sur les URL data:).
+const dataURLToBlob = async (u) => {
+  const i = u.indexOf(',');
+  const meta = u.slice(5, i);
+  const type = meta.split(';')[0] || 'application/octet-stream';
+  if (!/;base64/i.test(meta)) return new Blob([decodeURIComponent(u.slice(i + 1))], { type });
+  const bin = atob(u.slice(i + 1));
+  const bytes = new Uint8Array(bin.length);
+  for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+  return new Blob([bytes], { type });
+};
 
 async function backupJSON() {
   const photos = await db.all('photos');
