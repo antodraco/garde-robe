@@ -15,12 +15,13 @@ const S = (extra = {}) => ({ type: 'STRING', ...extra });
 const ARR = (items) => ({ type: 'ARRAY', items });
 const OBJ = (properties, required) => ({ type: 'OBJECT', properties, ...(required ? { required } : {}) });
 
-export async function callGemini({ settings, system, parts, contents, schema, search = false, raw = false }) {
+export async function callGemini({ settings, system, parts, contents, schema, search = false, raw = false, tools, full = false }) {
   if (!settings?.apiKey) throw new AIError('Ajoute ta clé API Gemini dans Profil → Réglages.');
   const model = settings.model || DEFAULT_MODEL;
   const body = { contents: contents || [{ role: 'user', parts }], generationConfig: {} };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
-  if (search) body.tools = [{ google_search: {} }];
+  if (tools) body.tools = [{ functionDeclarations: tools }];
+  else if (search) body.tools = [{ google_search: {} }];
   else if (schema) {
     body.generationConfig.responseMimeType = 'application/json';
     body.generationConfig.responseSchema = schema;
@@ -47,6 +48,9 @@ export async function callGemini({ settings, system, parts, contents, schema, se
   const cand = data.candidates?.[0];
   if (!cand) throw new AIError('Gemini n’a rien renvoyé' + (data.promptFeedback?.blockReason ? ` (${data.promptFeedback.blockReason})` : '') + '.');
   const text = (cand.content?.parts || []).filter(p => p.text && !p.thought).map(p => p.text).join('');
+  const functionCalls = (cand.content?.parts || []).filter(p => p.functionCall).map(p => p.functionCall);
+  // Mode « full » : on rend le contenu tel quel (signatures de réflexion comprises) pour les appels d'outils.
+  if (full) return { text, functionCalls, content: cand.content || { role: 'model', parts: [] }, finishReason: cand.finishReason };
   if (!text) throw new AIError(`Réponse vide de Gemini (${cand.finishReason || 'raison inconnue'}).`);
   const sources = (cand.groundingMetadata?.groundingChunks || [])
     .map(c => c.web).filter(w => w?.uri).map(w => ({ title: w.title || w.uri, uri: w.uri }));
@@ -315,8 +319,10 @@ export function wardrobeContext({ profile, items, weeks = [], today }) {
   const name = (id) => byId[id]?.nom || id;
   const recent = weeks.filter(w => w.weekStart <= today).sort((a, b) => b.weekStart.localeCompare(a.weekStart)).slice(0, 4)
     .flatMap(w => (w.tenues || []).map(t => `${t.dates[0]} → ${t.dates[t.dates.length - 1]}${t.porte ? ' (portée)' : ''} : ${t.itemIds.map(name).join(', ')}`));
-  const next = weeks.filter(w => w.weekStart > today).sort((a, b) => a.weekStart.localeCompare(b.weekStart))[0];
-  const planned = next ? (next.tenues || []).map(t => `${t.dates[0]} → ${t.dates[t.dates.length - 1]} : ${t.itemIds.map(name).join(', ')}`) : [];
+  const monday = (iso) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+  const thisWeek = monday(today);
+  const planned = weeks.filter(w => w.weekStart >= thisWeek).sort((a, b) => a.weekStart.localeCompare(b.weekStart)).slice(0, 2)
+    .flatMap(w => (w.tenues || []).map(t => `semaine=${w.weekStart} cle=${t.key} | ${t.dates[0]} → ${t.dates[t.dates.length - 1]}${t.porte ? ' (portée)' : ''} | « ${t.titre || ''} » | ${t.itemIds.map(id => `${id} ${name(id)}`).join(', ')}${w.note ? ` | remarques de la semaine : ${w.note}` : ''}`));
   return `PROFIL, GOÛTS, MENSURATIONS
 ${profileText(profile, { withMeasures: true })}
 
@@ -326,7 +332,7 @@ ${selling.length ? `\nPIÈCES EN COURS DE VENTE (plus disponibles pour les tenue
 TENUES RÉCENTES
 ${recent.join('\n') || '(aucune)'}
 
-TENUES PRÉVUES
+TENUES DE LA SEMAINE EN COURS ET DE LA SUIVANTE (modifiables avec l’outil modifier_tenue)
 ${planned.join('\n') || '(aucune)'}
 
 Date du jour : ${today}.`;
@@ -342,7 +348,8 @@ Principes :
 5. Photos de lui en tenue : examine chaque détail visible (tombé, longueurs, superpositions, couleurs, chaussures, accessoires), dis ce qui est réussi et ce qui ne l’est pas, puis donne la correction concrète, avec ses pièces.
 6. Quand tu proposes une tenue, utilise les noms exacts des pièces de l’inventaire. N’invente jamais une pièce qu’il n’a pas.
 7. Mise en forme légère : phrases courtes, listes seulement quand elles aident, pas de titres pompeux, pas d’emoji.
-8. Désigne toujours les pièces par leur nom (ex. « ton pantalon en flanelle grise »), jamais par leur identifiant technique (v12, v34…).`;
+8. Désigne toujours les pièces par leur nom (ex. « ton pantalon en flanelle grise »), jamais par leur identifiant technique (v12, v34…).
+9. Tu peux AGIR dans l’application grâce à tes outils : modifier la fiche d’une pièce (y compris son statut : garder, à vendre, donné…), modifier une tenue de la semaine, la marquer portée, changer les remarques de la semaine, modifier le profil (goûts, règles, mensurations, référentiel), ajouter une pièce à la liste d’achats. Quand l’utilisateur te demande un changement, fais-le directement avec l’outil (sans demander la permission), puis dis en une phrase ce que tu as changé. Pour une tenue, garde les pièces qu’il ne remet pas en cause et respecte la météo et ses règles. Si la demande est ambiguë (quelle pièce ? quelle semaine ?), pose une question courte au lieu d’agir. Ne modifie jamais rien de ta propre initiative sans qu’il l’ait demandé ; propose-le plutôt. L’utilisateur peut annuler d’un geste ce que tu as fait.`;
 
 // Les identifiants internes (v12, v34…) servent à l'IA pour désigner les pièces ; on ne les montre jamais.
 export function stripIds(t) {
@@ -353,6 +360,73 @@ export function stripIds(t) {
     .replace(/(\S)\s+v\d+\b(?=[\s,.;:!?)]|$)/g, '$1')              // « chambray gris v31 et » → « chambray gris et »
     .replace(/(^|[\s«"'])v\d+\s*[:–—-]\s*/g, '$1')               // « v34 : Pantalon… »
     .replace(/[ \t]{2,}/g, ' ').replace(/\s+([,.)])/g, '$1');
+}
+
+const T = (type, description, extra = {}) => ({ type, description, ...extra });
+export const CHAT_TOOLS = [
+  { name: 'modifier_piece', description: 'Modifie la fiche d’une pièce de la garde-robe. Ne renseigne que les champs à changer.',
+    parameters: OBJ({
+      id: T('STRING', 'identifiant de la pièce, ex. v12'),
+      modifications: OBJ({
+        nom: S(), categorie: T('STRING', `une de : ${Object.keys(CATEGORIES).join(', ')}`), marque: S(), taille: S(),
+        couleurPrincipale: S(), couleursSecondaires: ARR(S()), motif: S(), matiere: S(), col: S(), manches: S(), coupe: S(),
+        saisons: ARR(T('STRING', SAISONS.join(' | '))), formalite: T('INTEGER', '1 à 5'), chaleur: T('INTEGER', '1 à 5'),
+        etat: T('STRING', ETATS.join(' | ')), statut: T('STRING', 'garde | a_vendre | en_vente | vendu | donne'), notes: S(),
+        mesures: T('OBJECT', 'mesures à plat en cm (clés selon la catégorie : tailleAPlat, hanchesAPlat, entrejambe, longueurTotale, basJambe, longueur, aisselles, epaules, manche, semelle, largeur)', { properties: Object.fromEntries(['tailleAPlat', 'hanchesAPlat', 'entrejambe', 'longueurTotale', 'basJambe', 'longueur', 'aisselles', 'epaules', 'manche', 'semelle', 'largeur'].map(k => [k, { type: 'NUMBER' }])) }),
+      }),
+    }, ['id', 'modifications']) },
+  { name: 'modifier_tenue', description: 'Remplace les pièces d’une tenue de la semaine (liste complète des pièces de la nouvelle tenue).',
+    parameters: OBJ({
+      semaine: T('STRING', 'lundi de la semaine, format AAAA-MM-JJ (voir TENUES DE LA SEMAINE)'),
+      cle: T('STRING', 'A, B ou WE'),
+      itemIds: ARR(T('STRING', 'identifiant de pièce')),
+      titre: S(), explication: T('STRING', '1 à 2 phrases'),
+    }, ['semaine', 'cle', 'itemIds']) },
+  { name: 'marquer_tenue_portee', description: 'Marque une tenue comme portée (ou non).',
+    parameters: OBJ({ semaine: S(), cle: S(), portee: { type: 'BOOLEAN' } }, ['semaine', 'cle', 'portee']) },
+  { name: 'remarques_semaine', description: 'Remplace les remarques d’une semaine (contraintes : oral, messe, sortie…), utilisées pour composer les tenues.',
+    parameters: OBJ({ semaine: S(), remarques: S() }, ['semaine', 'remarques']) },
+  { name: 'modifier_profil', description: 'Modifie un champ du profil de l’utilisateur.',
+    parameters: OBJ({
+      champ: T('STRING', 'style | couleursAimees | couleursEvitees | coupes | matieres | interdits | contraintes | regles | referentielAchat | tHaut | tChemise | tPantalon | tVeste | poitrine | tourTaille | hanches | epaules | bras | entrejambe | cou | pointure | poids'),
+      valeur: T('STRING', 'nouvelle valeur complète du champ (reprends le texte existant si tu ne fais qu’ajouter quelque chose)'),
+    }, ['champ', 'valeur']) },
+  { name: 'ajouter_achat', description: 'Ajoute une pièce à chercher dans la liste d’achats.',
+    parameters: OBJ({ nom: S(), categorie: S(), pourquoi: S(), criteres: S(), budget: S(), taille: S(), motsClesVinted: S() }, ['nom']) },
+];
+
+// Conversation avec outils : l'IA peut appeler les outils (exécutés par l'appli) puis répond.
+export async function chatTurn({ settings, context, history, message, images = [], execute, maxSteps = 6 }) {
+  const contents = [];
+  for (const m of history) {
+    const parts = [];
+    for (const img of (m.sendImages || [])) parts.push(await blobToPart(img));
+    if (m.imageNote) parts.push({ text: m.imageNote });
+    if (m.text) parts.push({ text: m.text });
+    if (parts.length) contents.push({ role: m.role, parts });
+  }
+  const parts = [];
+  for (const img of images) parts.push(await blobToPart(img));
+  parts.push({ text: message || (images.length ? 'Donne-moi ton avis.' : '') });
+  contents.push({ role: 'user', parts });
+  const system = STYLIST_SYSTEM + '\n\n' + context;
+  for (let step = 0; step < maxSteps; step++) {
+    const r = await callGemini({ settings, contents, system, tools: CHAT_TOOLS, full: true });
+    if (!r.functionCalls.length) {
+      if (!r.text) throw new AIError(`Réponse vide de Gemini (${r.finishReason || 'raison inconnue'}).`);
+      return r.text;
+    }
+    contents.push(r.content);   // tel quel : Gemini exige ses signatures de réflexion
+    const responses = [];
+    for (const fc of r.functionCalls) {
+      let result;
+      try { result = await execute(fc.name, fc.args || {}); }
+      catch (e) { result = { erreur: e?.message || String(e) }; }
+      responses.push({ functionResponse: { name: fc.name, response: result } });
+    }
+    contents.push({ role: 'user', parts: responses });
+  }
+  return 'C’est fait.';
 }
 
 export async function chatReply({ settings, context, history, message, images = [] }) {

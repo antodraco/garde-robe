@@ -6,7 +6,7 @@ import {
 import { fetchWeather, describe, geocode } from './weather.js';
 import {
   AIError, DEFAULT_MODEL, MODELS, analyseItem, generateOutfits, triWardrobe, makeListing, callGemini, dayName,
-  wardrobeContext, chatReply, recommendPurchases, stripIds,
+  wardrobeContext, chatReply, chatTurn, recommendPurchases, stripIds,
 } from './ai.js';
 import * as drive from './drive.js';
 import {
@@ -941,8 +941,10 @@ async function renderStyliste() {
         sendImages: recentUsers.includes(m) ? (m.images || []).map(i => i.blob) : [],
         imageNote: !recentUsers.includes(m) && m.images?.length ? `[${m.images.length} image(s) jointe(s) précédemment]` : '',
       }));
-      const reply = await chatReply({ settings: state.settings, context, history: hist, message: text, images: images.map(i => i.blob) });
-      const modelMsg = { id: 'm' + (Date.now() + 1), role: 'model', text: reply, ts: Date.now() + 1 };
+      const act = chatActions();
+      const reply = await chatTurn({ settings: state.settings, context, history: hist, message: text, images: images.map(i => i.blob), execute: act.execute });
+      const modelMsg = { id: 'm' + (Date.now() + 1), role: 'model', text: reply, ts: Date.now() + 1,
+        actions: act.done.length ? act.done : undefined, undo: act.undo.length ? act.undo : undefined };
       await db.put('chat', modelMsg);
       messages.push(userMsg, modelMsg);
       wait.replaceWith(bubble(modelMsg));
@@ -959,9 +961,147 @@ async function renderStyliste() {
 function bubble(m) {
   const b = h('div', { class: 'bubble ' + m.role });
   if (m.images?.length) b.append(h('div', { class: 'bubble-imgs' }, m.images.map(i => h('img', { src: i.thumb, alt: 'Image' }))));
+  if (m.actions?.length) {
+    const box = h('div', { class: 'chat-actions' + (m.undone ? ' undone' : '') },
+      h('ul', {}, m.actions.map(a => h('li', {}, icon(m.undone ? 'undo' : 'check_circle', 'tiny'), ' ', a))),
+      m.undone ? h('p', { class: 'small muted' }, 'Changements annulés.')
+        : m.undo?.length ? button('Annuler ces changements', { kind: 'text', ic: 'undo', onclick: async () => {
+          if (!(await confirmBox('Annuler les changements faits par le styliste dans ce message ?', { ok: 'Annuler les changements' }))) return;
+          await undoChatActions(m); snackbar('Changements annulés'); rerender();
+        } }) : null);
+    b.append(box);
+  }
   if (m.text) b.append(m.role === 'model' ? renderMarkdown(cleanAI(m.text)) : h('p', {}, m.text));
   if (m.role === 'model') b.append(iconButton('content_copy', 'Copier', () => copyText(m.text), 'copy'));
   return b;
+}
+
+/* ---------- Outils du styliste : ce que l'IA peut faire dans l'appli ---------- */
+const ITEM_FIELDS = ['nom', 'categorie', 'marque', 'taille', 'couleurPrincipale', 'couleursSecondaires', 'motif', 'matiere', 'col', 'manches',
+  'coupe', 'saisons', 'formalite', 'chaleur', 'etat', 'statut', 'notes', 'mesures'];
+const PROFILE_FIELDS = [...PROFILE_TASTES.map(x => x[0]), ...PROFILE_SIZES.map(x => x[0]), ...PROFILE_MEASURES.map(x => x[0])];
+const FIELD_LABEL = { nom: 'nom', categorie: 'catégorie', marque: 'marque', taille: 'taille', couleurPrincipale: 'couleur', couleursSecondaires: 'autres couleurs',
+  motif: 'motif', matiere: 'matière', col: 'col', manches: 'manches', coupe: 'coupe', saisons: 'saisons', formalite: 'formalité', chaleur: 'chaleur',
+  etat: 'état', statut: 'statut', notes: 'notes', mesures: 'mesures' };
+
+function chatActions() {
+  const done = [], undo = [];
+  const snap = (kind, key, before) => { if (!undo.some(u => u.kind === kind && u.key === key)) undo.push({ kind, key, before: structuredClone(before ?? null) }); };
+  const getWeek = async (semaine) => {
+    const ws = /^\d{4}-\d{2}-\d{2}$/.test(semaine || '') ? mondayOf(semaine) : state.weekStart;
+    return normalizeWeek((await db.get('weeks', ws)) || { weekStart: ws, note: '' });
+  };
+  const items = () => byId();
+  const tools = {
+    async modifier_piece({ id, modifications = {} }) {
+      const it = items()[id];
+      if (!it) return { erreur: `pièce ${id} introuvable` };
+      const before = structuredClone(it);
+      const changed = [];
+      for (const [k, v0] of Object.entries(modifications)) {
+        if (!ITEM_FIELDS.includes(k) || v0 == null) continue;
+        let v = v0;
+        if (k === 'categorie') { v = Object.keys(CATEGORIES).find(c => c.toLowerCase() === String(v).toLowerCase()); if (!v) return { erreur: `catégorie inconnue : ${v0}` }; }
+        if (k === 'etat') { v = ETATS.find(e => e.toLowerCase() === String(v).toLowerCase()); if (!v) return { erreur: `état inconnu : ${v0}` }; }
+        if (k === 'statut' && !STATUTS[v]) return { erreur: `statut inconnu : ${v0}` };
+        if (k === 'saisons') v = (Array.isArray(v) ? v : [v]).map(x => SAISONS.find(sa => sa === String(x).toLowerCase())).filter(Boolean);
+        if (k === 'formalite' || k === 'chaleur') { v = Math.round(Number(v)); if (!(v >= 1 && v <= 5)) return { erreur: `${k} doit être entre 1 et 5` }; }
+        if (k === 'couleursSecondaires') v = (Array.isArray(v) ? v : String(v).split(',')).map(x => String(x).trim()).filter(Boolean);
+        if (k === 'mesures') { v = { ...(it.mesures || {}) }; for (const [mk, mv] of Object.entries(v0 || {})) { const n = Number(mv); if (n > 0) v[mk] = n; } }
+        if (typeof v === 'string') v = v.trim().slice(0, 600);
+        it[k] = v; changed.push(FIELD_LABEL[k] || k);
+      }
+      if (!changed.length) return { erreur: 'aucun champ modifiable fourni' };
+      if (it.statut === 'vendu' && !it.dateVente) it.dateVente = today();
+      snap('item', id, before);
+      await saveItem(it);
+      done.push(`Fiche « ${it.nom} » : ${changed.join(', ')}`);
+      return { ok: true, piece: it.nom, champs: changed };
+    },
+    async modifier_tenue({ semaine, cle, itemIds = [], titre, explication }) {
+      const week = await getWeek(semaine);
+      const key = String(cle || '').toUpperCase();
+      const slots = slotsFor(week.weekStart);
+      const slot = slots.find(x => x.key === key);
+      if (!slot) return { erreur: `pas de tenue ${key} dans le découpage actuel (${slots.map(x => x.key).join(', ')})` };
+      const all = items();
+      const bad = itemIds.filter(id => !all[id] || all[id].statut !== 'garde');
+      if (bad.length) return { erreur: `pièces inconnues ou plus dans la garde-robe : ${bad.join(', ')}` };
+      if (!itemIds.length) return { erreur: 'la tenue doit contenir des pièces' };
+      snap('week', week.weekStart, await db.get('weeks', week.weekStart));
+      let t = week.tenues.find(x => x.key === key && x.dates.join() === slot.dates.join());
+      if (!t) { t = { key, dates: slot.dates, itemIds: [], titre: 'Tenue', explication: '', porte: false }; week.tenues.push(t); }
+      const ids = [...new Set(itemIds)].sort((a, b) => GROUP_ORDER.indexOf(groupOf(all[a].categorie)) - GROUP_ORDER.indexOf(groupOf(all[b].categorie)));
+      if (t.porte) {
+        for (const id of t.itemIds.filter(x => !ids.includes(x))) { snap('item', id, all[id]); }
+        for (const id of ids.filter(x => !t.itemIds.includes(x))) { snap('item', id, all[id]); }
+        await setWear(t.itemIds.filter(x => !ids.includes(x)), t.dates, false);
+        await setWear(ids.filter(x => !t.itemIds.includes(x)), t.dates, true);
+      }
+      t.itemIds = ids;
+      if (titre) t.titre = titre;
+      if (explication) t.explication = explication;
+      week.tenues.sort((a, b) => a.dates[0].localeCompare(b.dates[0]));
+      week.sac = (week.sac || []).filter(id => week.tenues.some(x => x.itemIds.includes(id)));
+      await saveWeek(week);
+      done.push(`Tenue ${slotLabel(slot).toLowerCase()} (semaine du ${fmtDay(week.weekStart, { day: 'numeric', month: 'long' })}) modifiée`);
+      return { ok: true, tenue: ids.map(id => all[id].nom) };
+    },
+    async marquer_tenue_portee({ semaine, cle, portee }) {
+      const week = await getWeek(semaine);
+      const t = week.tenues.find(x => x.key === String(cle || '').toUpperCase());
+      if (!t) return { erreur: 'tenue introuvable' };
+      if (!!t.porte === !!portee) return { ok: true, info: 'déjà dans cet état' };
+      snap('week', week.weekStart, await db.get('weeks', week.weekStart));
+      for (const id of t.itemIds) snap('item', id, items()[id]);
+      t.porte = !!portee;
+      await setWear(t.itemIds, t.dates, t.porte);
+      await saveWeek(week);
+      done.push(`Tenue « ${cleanAI(t.titre)} » marquée ${t.porte ? 'portée' : 'non portée'}`);
+      return { ok: true };
+    },
+    async remarques_semaine({ semaine, remarques }) {
+      const week = await getWeek(semaine);
+      snap('week', week.weekStart, await db.get('weeks', week.weekStart));
+      week.note = String(remarques || '').slice(0, 1000);
+      await saveWeek(week);
+      done.push(`Remarques de la semaine du ${fmtDay(week.weekStart, { day: 'numeric', month: 'long' })} mises à jour`);
+      return { ok: true };
+    },
+    async modifier_profil({ champ, valeur }) {
+      if (!PROFILE_FIELDS.includes(champ)) return { erreur: `champ inconnu : ${champ}` };
+      snap('profile', 'profile', state.profile);
+      state.profile[champ] = String(valeur ?? '').slice(0, 4000);
+      await db.setKV('profile', state.profile);
+      scheduleAutoBackup();
+      const lbl = [...PROFILE_TASTES, ...PROFILE_SIZES, ...PROFILE_MEASURES].find(x => x[0] === champ)?.[1] || champ;
+      done.push(`Profil : « ${lbl} » mis à jour`);
+      return { ok: true };
+    },
+    async ajouter_achat(a) {
+      if (!a.nom) return { erreur: 'nom manquant' };
+      snap('wishlist', 'wishlist', state.wishlist);
+      state.wishlist = state.wishlist.concat({ ...a, id: 'w' + Date.now(), statut: 'a_chercher', priorite: 2 });
+      await saveWishlist();
+      done.push(`Ajouté aux achats : ${a.nom}`);
+      return { ok: true };
+    },
+  };
+  return {
+    done, undo,
+    execute: async (name, args) => (tools[name] ? tools[name](args) : { erreur: `outil inconnu : ${name}` }),
+  };
+}
+
+async function undoChatActions(m) {
+  for (const u of [...(m.undo || [])].reverse()) {
+    if (u.kind === 'item' && u.before) await saveItem(structuredClone(u.before));
+    if (u.kind === 'week') { if (u.before) await db.put('weeks', structuredClone(u.before)); else await db.del('weeks', u.key); scheduleAutoBackup(); }
+    if (u.kind === 'profile') { state.profile = structuredClone(u.before || {}); await db.setKV('profile', state.profile); scheduleAutoBackup(); }
+    if (u.kind === 'wishlist') { state.wishlist = structuredClone(u.before || []); await saveWishlist(); }
+  }
+  m.undone = true; delete m.undo;
+  await db.put('chat', m);
 }
 
 /* =========================================================== ACHATS */

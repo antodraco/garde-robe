@@ -512,3 +512,10 @@ main[data-route="garde-robe"] ~ #snackbar { bottom: calc(var(--nav-h) + env(safe
 .outfit-piece .piece-photo:active .thumb { border-radius: 40px; }
 .outfit-piece:active .thumb { border-radius: 20px; }
 .outfit-piece .piece-name { font-size: 12px; line-height: 1.2; }
+
+/* Actions faites par le styliste */
+.chat-actions { margin: 0 0 8px; padding: 10px 12px; border-radius: 16px; background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-size: 13px; }
+.chat-actions ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.chat-actions li { display: flex; align-items: flex-start; gap: 4px; }
+.chat-actions.undone { opacity: .6; text-decoration: line-through; }
+.chat-actions .btn { min-height: 36px; margin-top: 4px; padding: 0 8px; }
