@@ -87,8 +87,19 @@ const clamp15 = (n, d = 3) => { const x = Math.round(Number(n)); return x >= 1 &
    On coupe au premier signe de raisonnement, on garde la conclusion après la dernière flèche, on rééquilibre
    les parenthèses et on limite la longueur. */
 const LEAK = /```|\s(?:Wait|Actually|Let['’]s|Let me|I must|I need|I should|Hmm|NO!)\b|\.\s*(?:Wait|Actually|Let['’]s|Let me|So)\b/;
+export function cleanMatiere(v) {
+  let s = cleanField(v, 160);
+  // « coton (sans étiquette de composition visible, coton très probable…) » → « coton (sans étiquette) »
+  if (/sans [ée]tiquette/i.test(s) && !/\d+\s*%/.test(s.split('(')[0])) {
+    const base = s.split('(')[0].replace(/[\s,;:.—-]+$/, '').trim();
+    s = (base || 'composition inconnue') + ' (sans étiquette)';
+  }
+  return s;
+}
 export function cleanField(v, max = 120) {
   let s = String(v ?? '').replace(/\s+/g, ' ').trim();
+  s = s.replace(/[`"«»]+$/g, '').replace(/^[`"«»]+/g, '').trim();
+  s = s.replace(/\s*\?\s*Non\s*:.*$/i, '');
   const m = s.match(LEAK);
   if (m) s = s.slice(0, m.index);
   if (s.includes('->')) s = s.split('->').pop();
@@ -136,7 +147,7 @@ Chaque valeur est une donnée courte : jamais de raisonnement, d'hésitation, de
     nom: cleanField(json.nom, 80),
     couleurPrincipale: cleanField(json.couleurPrincipale, 40),
     couleursSecondaires: Array.isArray(json.couleursSecondaires) ? json.couleursSecondaires.map(c => cleanField(c, 30)).filter(Boolean) : [],
-    motif: cleanField(json.motif, 60), matiere: cleanField(json.matiere, 160), col: cleanField(json.col, 40), manches: cleanField(json.manches, 40),
+    motif: cleanField(json.motif, 60), matiere: cleanMatiere(json.matiere), col: cleanField(json.col, 40), manches: cleanField(json.manches, 40),
     coupe: cleanField(json.coupe, 400), marque: cleanField(json.marque, 40), taille: cleanField(json.taille, 40),
     saisons: (json.saisons || []).map(s => matchFrom(SAISONS, s, null)).filter(Boolean),
     formalite: clamp15(json.formalite), chaleur: clamp15(json.chaleur),
