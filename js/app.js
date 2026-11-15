@@ -30,6 +30,14 @@ const state = {
   weekStart: null, busy: false,
 };
 const byId = () => Object.fromEntries(state.items.map(i => [i.id, i]));
+// Textes de l'IA : un identifiant isolé dans une phrase (« avec v12 et v31 ») devient le nom de la pièce ;
+// les identifiants entre parenthèses, redondants avec le nom déjà écrit, sont simplement retirés.
+function cleanAI(t) {
+  const items = byId();
+  const named = String(t ?? '').replace(/(^|[\s,;:])(v\d+)\b(?!\s*\))/g, (m, pre, id) =>
+    items[id] ? `${pre}« ${items[id].nom.charAt(0).toLowerCase() + items[id].nom.slice(1)} »` : m);
+  return stripIds(named);
+}
 const view = () => document.getElementById('view');
 
 /* =========================================================== Démarrage */
@@ -310,7 +318,7 @@ function tenueCard(slot, tenue, w, week) {
     card.append(h('p', { class: 'muted empty-day' }, past ? 'Aucune tenue enregistrée.' : 'Pas encore de tenue.'));
     return card;
   }
-  card.append(h('h4', { class: 'outfit-title' }, stripIds(tenue.titre)));
+  card.append(h('h4', { class: 'outfit-title' }, cleanAI(tenue.titre)));
   const row = h('div', { class: 'outfit-items' });
   for (const id of tenue.itemIds) {
     const it = items[id];
@@ -321,7 +329,7 @@ function tenueCard(slot, tenue, w, week) {
       h('button', { class: 'piece-name', type: 'button', title: 'Changer cette pièce', onclick: () => swapPiece(week, tenue, id, w) }, h('span', {}, it.nom))));
   }
   card.append(row);
-  if (tenue.explication) card.append(h('p', { class: 'explain' }, stripIds(tenue.explication)));
+  if (tenue.explication) card.append(h('p', { class: 'explain' }, cleanAI(tenue.explication)));
   card.append(h('div', { class: 'row wrap' },
     button(tenue.porte ? 'Portée' : 'Je l’ai portée', { kind: tenue.porte ? 'tonal' : 'outlined', ic: tenue.porte ? 'check_circle' : 'radio_button_unchecked',
       onclick: () => toggleWorn(week, tenue) }),
@@ -920,7 +928,7 @@ async function renderStyliste() {
 function bubble(m) {
   const b = h('div', { class: 'bubble ' + m.role });
   if (m.images?.length) b.append(h('div', { class: 'bubble-imgs' }, m.images.map(i => h('img', { src: i.thumb, alt: 'Image' }))));
-  if (m.text) b.append(m.role === 'model' ? renderMarkdown(stripIds(m.text)) : h('p', {}, m.text));
+  if (m.text) b.append(m.role === 'model' ? renderMarkdown(cleanAI(m.text)) : h('p', {}, m.text));
   if (m.role === 'model') b.append(iconButton('content_copy', 'Copier', () => copyText(m.text), 'copy'));
   return b;
 }
@@ -969,7 +977,7 @@ function wishlistSection() {
     h('h3', {}, icon('shopping_bag'), ' À acheter'),
     h('p', { class: 'muted small' }, 'Le styliste cherche ce qui compléterait le mieux ta garde-robe, puis te donne quoi taper sur Vinted et quoi vérifier.'),
     h('label', { class: 'field' }, note), btn,
-    state.wishlistBilan ? h('p', { class: 'small' }, state.wishlistBilan) : null,
+    state.wishlistBilan ? h('p', { class: 'small' }, cleanAI(state.wishlistBilan)) : null,
     open.length ? h('div', { class: 'wishes' }, open.sort((a, b) => a.priorite - b.priorite).map(row)) : null,
     bought.length ? h('details', {}, h('summary', {}, `Achetées (${bought.length})`), bought.map(row)) : null);
   return card;
@@ -1045,7 +1053,7 @@ function triResults() {
   const row = (a) => {
     const it = items[a.id];
     return h('div', { class: 'list-row' }, zoomThumb(it, 'small'),
-      h('div', { class: 'grow' }, h('strong', {}, it.nom), h('p', { class: 'small' }, stripIds(a.raison))),
+      h('div', { class: 'grow' }, h('strong', {}, it.nom), h('p', { class: 'small' }, cleanAI(a.raison))),
       h('div', { class: 'col' },
         iconButton('sell', 'Mettre en vente', async () => { await toSale(a.id); snackbar('Ajoutée à tes ventes'); rerender(); }, 'tonal'),
         iconButton('favorite', 'Garder', async () => { await markDone(a.id); rerender(); })));
@@ -1061,8 +1069,8 @@ function triResults() {
       h('span', { class: 'tri-sum-title' }, icon('history'), ` Analyse du ${when}`),
       h('span', { class: 'tri-sum-meta' }, `${nb} pièce${nb > 1 ? 's' : ''} analysée${nb > 1 ? 's' : ''} · ${sell.length} à vendre · ${check.length} à vérifier`),
       icon('expand_more', 'tri-chevron')),
-    tri.bilan ? h('p', {}, stripIds(tri.bilan)) : null,
-    tri.manques?.length ? h('div', {}, h('h4', {}, 'Ce qui te manque'), h('ul', {}, tri.manques.map(m => h('li', {}, stripIds(m))))) : null,
+    tri.bilan ? h('p', {}, cleanAI(tri.bilan)) : null,
+    tri.manques?.length ? h('div', {}, h('h4', {}, 'Ce qui te manque'), h('ul', {}, tri.manques.map(m => h('li', {}, cleanAI(m))))) : null,
     h('h4', {}, `À vendre (${sell.length})`),
     sell.length ? [sell.map(row), button('Tout mettre en vente', { kind: 'tonal', ic: 'sell', onclick: async () => {
       for (const a of sell) await toSale(a.id);

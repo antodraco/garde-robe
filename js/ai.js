@@ -273,7 +273,7 @@ Renvoie exactement une tenue pour chacune de ces clés : ${keys.join(', ')}.`;
     if (!t) return null;
     const ids = [...new Set(t.itemIds || [])].filter(id => byId[id]);
     ids.sort((a, b) => GROUP_ORDER.indexOf(groupOf(byId[a].categorie)) - GROUP_ORDER.indexOf(groupOf(byId[b].categorie)));
-    return { key: s.key, dates: s.dates, itemIds: ids, titre: stripIds(t.titre) || 'Tenue', explication: stripIds(t.explication), porte: false };
+    return { key: s.key, dates: s.dates, itemIds: ids, titre: t.titre || 'Tenue', explication: t.explication || '', porte: false };
   }).filter(Boolean);
   return { tenues, problems };
 }
@@ -352,7 +352,7 @@ export function stripIds(t) {
     .replace(/\b(id|réf\.?)\s+v\d+\b\s*/gi, '')
     .replace(/(\S)\s+v\d+\b(?=[\s,.;:!?)]|$)/g, '$1')              // « chambray gris v31 et » → « chambray gris et »
     .replace(/(^|[\s«"'])v\d+\s*[:–—-]\s*/g, '$1')               // « v34 : Pantalon… »
-    .replace(/[ \t]{2,}/g, ' ').replace(/\s+([,.;:!?)])/g, '$1');
+    .replace(/[ \t]{2,}/g, ' ').replace(/\s+([,.)])/g, '$1');
 }
 
 export async function chatReply({ settings, context, history, message, images = [] }) {
@@ -369,7 +369,7 @@ export async function chatReply({ settings, context, history, message, images = 
   parts.push({ text: message || (images.length ? 'Donne-moi ton avis.' : '') });
   contents.push({ role: 'user', parts });
   const { text } = await callGemini({ settings, raw: true, contents, system: STYLIST_SYSTEM + '\n\n' + context });
-  return stripIds(text);
+  return text;
 }
 
 /* ---------- 2c. Recommandations d'achats ---------- */
@@ -399,7 +399,7 @@ Termine par un bilan (2 phrases).`;
       priorite: [1, 2, 3].includes(Number(a.priorite)) ? Number(a.priorite) : 2, budget: a.budget || '', taille: a.taille || '',
       motsClesVinted: a.motsClesVinted || '', criteres: a.criteres || '',
     })).filter(a => a.nom),
-    bilan: stripIds(json.bilan),
+    bilan: json.bilan || '',
   };
 }
 
@@ -433,15 +433,18 @@ RÈGLES DE PRUDENCE (obligatoires) :
 7. Ne recommande jamais de vendre la pièce de référence (Suitsupply Duca) ni les pièces citées comme « dépannage ».
 Vise une proposition raisonnable : en général, pas plus d'un quart des pièces à vendre ; le reste en « garder » ou « verifier ».
 Pour « vendre », précise dans la raison si la pièce vaut la peine d'une annonce (marque, bon état : au moins 10 € attendus) ou s'il vaut mieux la donner. Sois concret (1 phrase).
+8. Tailles d'enfant : chez Polo Ralph Lauren, Cyrillus, Sergent Major, Tommy Hilfiger, etc., « 14 », « 16 », « 164 », « 176 » sont souvent des tailles enfant (âge ou stature), pas un tour de cou ni une taille adulte. Un 16 ans peut aller à un adulte mince : en cas de doute → « verifier ».
+9. Ne propose jamais de vendre un cadeau ou une pièce marquée « valeur émotionnelle » dans les notes, ni une pièce neuve qu'il vient d'acheter pour compléter son style (mi-bas, chaussettes en laine…).
+Dans les raisons, désigne les autres pièces par leur nom, jamais par leur identifiant.
 Ajoute un bilan (2 à 3 phrases, bienveillant et réaliste) et la liste des « manques » : pièces qui rendraient la garde-robe bien plus polyvalente.`;
   const { json } = await callGemini({ settings, schema: TRI_SCHEMA, parts: [{ text }],
     system: 'Tu es un conseiller en garde-robe pragmatique, honnête et prudent : tu ne fais jamais jeter ou vendre une pièce sur une simple supposition. Tu réponds en français.' });
   const ids = new Set(wardrobe.map(i => i.id));
   const articles = (json.articles || []).filter(a => ids.has(a.id)).map(a => ({
-    id: a.id, raison: stripIds(a.raison),
+    id: a.id, raison: a.raison || '',
     decision: /vend/i.test(a.decision) ? 'vendre' : /v[eé]rif/i.test(a.decision) ? 'verifier' : 'garder',
   }));
-  return { articles, bilan: stripIds(json.bilan), manques: (json.manques || []).map(stripIds), date: new Date().toISOString() };
+  return { articles, bilan: json.bilan || '', manques: json.manques || [], date: new Date().toISOString() };
 }
 
 /* ---------- 4. Annonce Vinted ---------- */
