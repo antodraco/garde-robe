@@ -1,6 +1,6 @@
 // Service worker : l'appli fonctionne hors ligne (sauf IA, météo et Drive, qui demandent Internet)
 // et reçoit les images partagées depuis d'autres applis (captures Vinted, photos).
-const VERSION = 'garde-robe-v20';
+const VERSION = 'garde-robe-v21';
 const INBOX = 'inbox';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',

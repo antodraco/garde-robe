@@ -1172,9 +1172,11 @@ function renderTri() {
     h('h3', {}, icon('rule'), ' Faire le tri'),
     h('p', {}, 'L’IA compare chaque pièce à tes goûts, à tes mensurations et à son utilité dans tes tenues, puis te dit quoi garder ou vendre.'),
     !state.profile.style && !state.profile.tailleCm ? h('p', { class: 'warn small' }, icon('info', 'tiny'), ' Remplis d’abord ton profil (mensurations et goûts) pour un tri pertinent.') : null);
-  const triBtn = button(state.tri ? 'Relancer l’analyse' : 'Analyser ma garde-robe', {
+  const triBtn = button(state.tri ? 'Nouvelle analyse par Gemini' : 'Analyser ma garde-robe', {
+    kind: state.tri?.source === 'claude' ? 'outlined' : 'filled',
     ic: 'auto_awesome', cls: 'wide', disabled: !state.settings.apiKey || kept.length < 3,
     onclick: async () => {
+      if (state.tri?.source === 'claude' && !(await confirmBox('Remplacer le tri de Claude par une nouvelle analyse de Gemini ? Les décisions déjà prises restent appliquées à tes pièces.', { ok: 'Remplacer' }))) return;
       triBtn.disabled = true;
       triCard.append(loader('Analyse de toutes tes pièces…'));
       try {
@@ -1215,66 +1217,60 @@ const stat = (n, l) => h('div', { class: 'stat' }, h('strong', {}, n), h('span',
 
 function triResults() {
   const tri = state.tri;
+  const all = trialList();
+  const essayer = all.filter(x => x.plan.essai && !x.done).length;
+  const sortir = all.filter(x => !x.plan.essai && !x.done).length;
   const items = byId();
-  const traites = new Set(tri.traites || []);
-  const relevant = tri.articles.filter(a => items[a.id] && items[a.id].statut === 'garde' && !traites.has(a.id));
-  const sell = relevant.filter(a => a.decision === 'vendre');
-  const check = relevant.filter(a => a.decision === 'verifier');
-  const keep = tri.articles.filter(a => a.decision === 'garder' && items[a.id]);
+  const keep = tri.articles.filter(a => !trialPlan(a) && items[a.id]).length;
 
-  const markDone = async (id) => { tri.traites = [...traites, id]; await db.setKV('tri', tri); };
-  const toSale = async (id) => { const it = items[id]; it.statut = 'a_vendre'; await saveItem(it); await markDone(id); };
-
-  const row = (a) => {
-    const it = items[a.id];
-    return h('div', { class: 'list-row' }, zoomThumb(it, 'small'),
-      h('div', { class: 'grow' }, h('strong', {}, it.nom), h('p', { class: 'small' }, cleanAI(a.raison))),
-      h('div', { class: 'col' },
-        iconButton('sell', 'Mettre en vente', async () => { await toSale(a.id); snackbar('Ajoutée à tes ventes'); rerender(); }, 'tonal'),
-        iconButton('favorite', 'Garder', async () => { await markDone(a.id); rerender(); })));
-  };
-
-  // Repliable : l'en-tête rappelle la date et le nombre de pièces analysées ; l'état ouvert/fermé est mémorisé.
+  // Repliable : l'en-tête rappelle qui a fait le tri, la date et ce qui reste ; l'état ouvert/fermé est mémorisé.
   const nb = tri.count || tri.articles.length;
   const d = new Date(tri.date);
   const when = fmtDay(tri.date.slice(0, 10), { day: 'numeric', month: 'long' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const reste = [essayer ? `${essayer} à essayer` : '', sortir ? `${sortir} à sortir` : ''].filter(Boolean).join(' · ') || 'tout est décidé';
   const details = h('details', { class: 'card tri-result', open: tri.open !== false,
     ontoggle: () => { if (tri.open !== details.open) { tri.open = details.open; db.setKV('tri', tri); } } },
     h('summary', {},
-      h('span', { class: 'tri-sum-title' }, icon('history'), ` Analyse du ${when}`),
-      h('span', { class: 'tri-sum-meta' }, `${nb} pièce${nb > 1 ? 's' : ''} analysée${nb > 1 ? 's' : ''} · ${sell.length} à vendre · ${check.length} à vérifier`),
+      h('span', { class: 'tri-sum-title' }, icon('history'), ` ${tri.source === 'claude' ? 'Tri de Claude' : 'Analyse'} du ${when}`),
+      h('span', { class: 'tri-sum-meta' }, `${nb} pièce${nb > 1 ? 's' : ''} · ${reste}`),
       icon('expand_more', 'tri-chevron')),
     tri.bilan ? h('p', {}, cleanAI(tri.bilan)) : null,
     tri.manques?.length ? h('div', {}, h('h4', {}, 'Ce qui te manque'), h('ul', {}, tri.manques.map(m => h('li', {}, cleanAI(m))))) : null,
-    h('h4', {}, `À vendre (${sell.length})`),
-    sell.length ? [sell.map(row), button('Tout mettre en vente', { kind: 'tonal', ic: 'sell', onclick: async () => {
-      for (const a of sell) await toSale(a.id);
-      snackbar(`${sell.length} pièces ajoutées à tes ventes`); rerender();
-    } })] : h('p', { class: 'muted small' }, 'Rien à vendre en attente.'),
-    check.length ? [h('h4', {}, `À vérifier en essayant (${check.length})`), check.map(row)] : null,
-    h('p', { class: 'muted small' }, `${keep.length} pièce${keep.length > 1 ? 's' : ''} à garder.`));
+    h('p', { class: 'muted small' }, `${keep} pièce${keep > 1 ? 's' : ''} à garder sans rien faire. Le reste se règle dans le mode essayage.`));
   return details;
 }
 
 /* ---------- Mode essayage : décider pièce par pièce, le statut change tout de suite ---------- */
 const TRIAL = {
-  keep: { label: 'Je garde', ic: 'favorite', cls: 'trial-keep' },
+  keep: { label: 'Gardées', ic: 'favorite', cls: 'trial-keep' },
   sell: { label: 'À vendre', ic: 'sell', cls: 'trial-sell' },
-  give: { label: 'Donner', ic: 'volunteer_activism', cls: 'trial-give' },
+  give: { label: 'À donner', ic: 'volunteer_activism', cls: 'trial-give' },
   bin: { label: 'Bac textile', ic: 'recycling', cls: 'trial-bin' },
 };
 const TRIAL_ORDER = ['bas', 'maille', 'haut', 'dessus', 'chaussures', 'accessoire'];
 
-// Pièces que l'analyse propose de vendre ou de vérifier, avec la décision déjà prise pendant l'essayage.
+// Ce qu'on fait d'une pièce d'après le tri. Deux formats : celui de Claude (garder / essayer / vendre / donner / bac,
+// avec siNonVa pour les pièces à essayer) et l'ancien format de Gemini (garder / verifier / vendre).
+const SORTIE = { vendre: 'sell', donner: 'give', bac: 'bin' };
+const SORTIE_TXT = { sell: 'à vendre', give: 'à donner', bin: 'au bac textile' };
+function trialPlan(a) {
+  const d = a.decision;
+  if (d === 'essayer' || d === 'verifier') return { essai: true, sortie: SORTIE[a.siNonVa] || 'give' };
+  if (SORTIE[d]) return { essai: false, sortie: SORTIE[d] };
+  return null;   // garder
+}
+
+// Pièces à essayer ou à sortir, avec la décision déjà prise pendant l'essayage.
 function trialList() {
   const tri = state.tri;
   if (!tri?.articles) return [];
   const items = byId();
   const essai = tri.essai || {};
   return tri.articles
-    .filter(a => ['vendre', 'verifier'].includes(a.decision) && items[a.id])
+    .filter(a => items[a.id] && trialPlan(a))
     .filter(a => essai[a.id] || items[a.id].statut === 'garde')
-    .map(a => ({ a, it: items[a.id], dec: essai[a.id]?.dec || null, done: !!essai[a.id] }));
+    .map(a => ({ a, it: items[a.id], plan: trialPlan(a), dec: essai[a.id]?.dec || null, done: !!essai[a.id] }))
+    .sort((x, y) => (y.plan.essai - x.plan.essai));
 }
 
 async function applyTrial(id, dec) {
@@ -1313,18 +1309,23 @@ function openTrialMode() {
 
   const row = (x) => {
     const meta = [x.it.marque, x.it.taille].filter(Boolean).join(' · ');
-    const el = h('article', { class: 'trial-row' + (x.dec ? ' ' + TRIAL[x.dec].cls : ''), 'data-id': x.it.id },
+    const { essai, sortie } = x.plan;
+    const consigne = essai ? 'Essaie-le.' : `Pas besoin d’essayer : ${SORTIE_TXT[sortie]}.`;
+    const choices = essai
+      ? [['keep', 'Ça me va'], [sortie, 'Ne va pas : ' + SORTIE_TXT[sortie]]]
+      : [[sortie, 'OK, ' + SORTIE_TXT[sortie]], ['keep', 'Je le garde']];
+    return h('article', { class: 'trial-row' + (x.dec ? ' ' + TRIAL[x.dec].cls : ''), 'data-id': x.it.id },
       h('div', { class: 'list-row' }, zoomThumb(x.it, 'small'),
         h('div', { class: 'grow' }, h('strong', {}, x.it.nom), meta ? h('small', { class: 'muted' }, meta) : null,
-          h('p', { class: 'small muted' }, (x.a.decision === 'vendre' ? 'Analyse : à vendre. ' : 'Analyse : à vérifier. ') + cleanAI(x.a.raison)))),
-      h('div', { class: 'chips trial-chips' }, Object.entries(TRIAL).map(([k, t]) =>
-        h('button', { type: 'button', class: 'chip' + (x.dec === k ? ' on ' + t.cls : ''), 'aria-pressed': String(x.dec === k),
+          h('p', { class: 'trial-todo' }, consigne),
+          x.a.raison ? h('p', { class: 'small muted' }, cleanAI(x.a.raison)) : null)),
+      h('div', { class: 'chips trial-chips' }, choices.map(([k, label]) =>
+        h('button', { type: 'button', class: 'chip ' + TRIAL[k].cls + (x.dec === k ? ' on' : ''), 'aria-pressed': String(x.dec === k),
           onclick: async (e) => {
             e.currentTarget.disabled = true;
             try { await applyTrial(x.it.id, k); } catch (err) { snackbar(errorText(err)); }
             paint();
-          } }, icon(x.dec === k ? 'check' : t.ic), t.label))));
-    return el;
+          } }, icon(x.dec === k ? 'check' : TRIAL[k].ic), label))));
   };
 
   function paint() {
@@ -1347,7 +1348,7 @@ function openTrialMode() {
   }
 
   const body = h('div', { class: 'trial' },
-    h('p', { class: 'small' }, 'Essaie chaque pièce et choisis. Le statut change tout de suite : « Je garde » ajoute « Essayé : va » aux notes, « À vendre » la met dans tes ventes, « Donner » et « Bac textile » la sortent de ta garde-robe. Touche de nouveau le même bouton pour annuler.'),
+    h('p', { class: 'small' }, 'Pour chaque pièce, fais ce qui est écrit et appuie sur l’un des deux boutons : le statut change tout de suite. Si tu t’es trompé, touche de nouveau le même bouton pour annuler.'),
     counter, tallies, hideChip, list);
   paint();
   fullDialog({ title: 'Mode essayage', body, onClose: () => rerender() });
@@ -1593,7 +1594,7 @@ function renderProfil() {
     h('div', { class: 'row wrap' },
       button('Fichier de sauvegarde', { kind: 'tonal', ic: 'download', onclick: () => exportBackup(false) }),
       button('Restaurer un fichier', { kind: 'outlined', ic: 'upload', onclick: () => importIn.click() }), importIn,
-      button('Importer un profil', { kind: 'outlined', ic: 'person_add', onclick: () => profIn.click() }), profIn),
+      button('Importer un profil ou un tri', { kind: 'outlined', ic: 'person_add', onclick: () => profIn.click() }), profIn),
     button('Tout effacer', { kind: 'text', ic: 'delete_forever', cls: 'danger-text', onclick: wipeAll })));
   v.append(h('p', { class: 'muted small center' }, 'Garde-robe · v1.2'));
 }
@@ -1676,6 +1677,7 @@ async function importProfile(file) {
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
+    if (data.app === 'garde-robe-tri') return await importTri(data);
     const p = data.app === 'garde-robe-profil' ? data.profile : (data.app === 'garde-robe' ? data.profile : null);
     if (!p || typeof p !== 'object') throw new Error('Ce fichier ne contient pas de profil.');
     const n = Object.keys(p).filter(k => p[k] !== '' && p[k] != null).length;
@@ -1684,6 +1686,31 @@ async function importProfile(file) {
     await db.setKV('profile', state.profile);
     snackbar('Profil importé'); rerender();
   } catch (e) { snackbar(e.message || 'Import impossible', { duration: 6000 }); }
+}
+
+// Tri préparé à l'extérieur (fichier { app: 'garde-robe-tri', tri: {…} }) : remplace l'analyse, garde les décisions d'essayage déjà prises.
+async function importTri(data) {
+  const t = data.tri;
+  if (!t || !Array.isArray(t.articles)) throw new Error('Ce fichier ne contient pas de tri.');
+  const items = byId();
+  const ok = new Set(['garder', 'essayer', 'vendre', 'donner', 'bac']);
+  const articles = t.articles.filter(a => a && items[a.id] && ok.has(a.decision))
+    .map(a => ({ id: a.id, decision: a.decision, siNonVa: a.siNonVa || '', raison: String(a.raison || '') }));
+  if (!articles.length) throw new Error('Aucune pièce de ce tri ne correspond à ta garde-robe.');
+  const n = (d) => articles.filter(a => a.decision === d).length;
+  const msg = `Importer le tri de ${articles.length} pièces : ${n('essayer')} à essayer, ${n('vendre')} à vendre, ${n('donner')} à donner, ${n('bac')} au bac textile, ${n('garder')} à garder ? Il remplace l’analyse actuelle ; ce que tu as déjà décidé en essayage est conservé.`;
+  if (!(await confirmBox(msg, { ok: 'Importer' }))) return;
+  const old = state.tri || {};
+  const ids = new Set(articles.map(a => a.id));
+  const essai = Object.fromEntries(Object.entries(old.essai || {}).filter(([id]) => ids.has(id)));
+  state.tri = {
+    source: 'claude', articles, bilan: String(t.bilan || ''), manques: Array.isArray(t.manques) ? t.manques.map(String) : [],
+    date: t.date || new Date().toISOString(), count: articles.length,
+    traites: (old.traites || []).filter(id => essai[id]), essai, open: true,
+  };
+  await db.setKV('tri', state.tri);
+  snackbar('Tri importé. Ouvre le mode essayage dans Tri & achats.', { duration: 6000 });
+  rerender();
 }
 
 /* ---- Google Drive ---- */
