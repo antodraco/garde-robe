@@ -1188,6 +1188,10 @@ function renderTri() {
     },
   });
   triCard.append(triBtn);
+  if (state.tri) {
+    const todo = trialList().filter(x => !x.done).length;
+    triCard.append(button(todo ? `Mode essayage (${todo} à décider)` : 'Mode essayage', { kind: 'tonal', ic: 'checkroom', cls: 'wide', onclick: openTrialMode }));
+  }
   if (kept.length < 3) triCard.append(h('p', { class: 'muted small' }, 'Ajoute au moins 3 pièces pour lancer l’analyse.'));
   v.append(triCard);
 
@@ -1250,6 +1254,103 @@ function triResults() {
     check.length ? [h('h4', {}, `À vérifier en essayant (${check.length})`), check.map(row)] : null,
     h('p', { class: 'muted small' }, `${keep.length} pièce${keep.length > 1 ? 's' : ''} à garder.`));
   return details;
+}
+
+/* ---------- Mode essayage : décider pièce par pièce, le statut change tout de suite ---------- */
+const TRIAL = {
+  keep: { label: 'Je garde', ic: 'favorite', cls: 'trial-keep' },
+  sell: { label: 'À vendre', ic: 'sell', cls: 'trial-sell' },
+  give: { label: 'Donner', ic: 'volunteer_activism', cls: 'trial-give' },
+  bin: { label: 'Bac textile', ic: 'recycling', cls: 'trial-bin' },
+};
+const TRIAL_ORDER = ['bas', 'maille', 'haut', 'dessus', 'chaussures', 'accessoire'];
+
+// Pièces que l'analyse propose de vendre ou de vérifier, avec la décision déjà prise pendant l'essayage.
+function trialList() {
+  const tri = state.tri;
+  if (!tri?.articles) return [];
+  const items = byId();
+  const essai = tri.essai || {};
+  return tri.articles
+    .filter(a => ['vendre', 'verifier'].includes(a.decision) && items[a.id])
+    .filter(a => essai[a.id] || items[a.id].statut === 'garde')
+    .map(a => ({ a, it: items[a.id], dec: essai[a.id]?.dec || null, done: !!essai[a.id] }));
+}
+
+async function applyTrial(id, dec) {
+  const tri = state.tri;
+  tri.essai ||= {};
+  const it = byId()[id];
+  if (!it) return;
+  const prev = tri.essai[id];
+  // On repart toujours de l'état d'avant l'essayage, pour pouvoir changer d'avis ou annuler.
+  if (prev) { it.statut = prev.before.statut; it.notes = prev.before.notes; }
+  const traites = new Set(tri.traites || []);
+  if (!dec || prev?.dec === dec) {
+    delete tri.essai[id];
+    if (!prev?.wasTraite) traites.delete(id);
+  } else {
+    const before = prev?.before || { statut: it.statut, notes: it.notes || '' };
+    const wasTraite = prev ? prev.wasTraite : traites.has(id);
+    const d = fmtDay(today(), { day: '2-digit', month: '2-digit' });
+    const extra = { keep: `Essayé le ${d} : va.`, give: `Donné le ${d}.`, bin: `Mis au bac textile le ${d}.`, sell: '' }[dec];
+    it.statut = { keep: 'garde', sell: 'a_vendre', give: 'donne', bin: 'donne' }[dec];
+    it.notes = extra ? [before.notes.trim(), extra].filter(Boolean).join(' ') : before.notes;
+    tri.essai[id] = { dec, before, wasTraite };
+    traites.add(id);
+  }
+  tri.traites = [...traites];
+  await saveItem(it);
+  await db.setKV('tri', tri);
+}
+
+function openTrialMode() {
+  let hideDone = false;
+  const counter = h('p', { class: 'trial-count' });
+  const tallies = h('div', { class: 'chips' });
+  const list = h('div', { class: 'trial-list' });
+  const hideChip = h('button', { type: 'button', class: 'chip', onclick: () => { hideDone = !hideDone; paint(); } });
+
+  const row = (x) => {
+    const meta = [x.it.marque, x.it.taille].filter(Boolean).join(' · ');
+    const el = h('article', { class: 'trial-row' + (x.dec ? ' ' + TRIAL[x.dec].cls : ''), 'data-id': x.it.id },
+      h('div', { class: 'list-row' }, zoomThumb(x.it, 'small'),
+        h('div', { class: 'grow' }, h('strong', {}, x.it.nom), meta ? h('small', { class: 'muted' }, meta) : null,
+          h('p', { class: 'small muted' }, (x.a.decision === 'vendre' ? 'Analyse : à vendre. ' : 'Analyse : à vérifier. ') + cleanAI(x.a.raison)))),
+      h('div', { class: 'chips trial-chips' }, Object.entries(TRIAL).map(([k, t]) =>
+        h('button', { type: 'button', class: 'chip' + (x.dec === k ? ' on ' + t.cls : ''), 'aria-pressed': String(x.dec === k),
+          onclick: async (e) => {
+            e.currentTarget.disabled = true;
+            try { await applyTrial(x.it.id, k); } catch (err) { snackbar(errorText(err)); }
+            paint();
+          } }, icon(x.dec === k ? 'check' : t.ic), t.label))));
+    return el;
+  };
+
+  function paint() {
+    const all = trialList();
+    const done = all.filter(x => x.done);
+    counter.textContent = `${done.length} / ${all.length} pièces décidées`;
+    fill(tallies, Object.entries(TRIAL).map(([k, t]) => {
+      const n = done.filter(x => x.dec === k).length;
+      return h('span', { class: 'chip trial-tally ' + t.cls }, icon(t.ic), `${t.label} ${n}`);
+    }));
+    fill(hideChip, icon(hideDone ? 'visibility' : 'visibility_off'), hideDone ? 'Montrer les pièces décidées' : 'Cacher les pièces décidées');
+    const shown = hideDone ? all.filter(x => !x.done) : all;
+    const groups = TRIAL_ORDER.map(g => [g, shown.filter(x => groupOf(x.it.categorie) === g)]).filter(([, l]) => l.length);
+    fill(list, groups.length ? groups.map(([g, l]) => {
+      const total = all.filter(x => groupOf(x.it.categorie) === g);
+      return h('section', { class: 'trial-group' },
+        h('h3', {}, icon(GROUPS[g].icon), ` ${GROUPS[g].label}`, h('span', { class: 'muted small' }, ` ${total.filter(x => x.done).length}/${total.length}`)),
+        l.map(row));
+    }) : h('p', { class: 'muted' }, all.length ? 'Tout est décidé. Bravo !' : 'Aucune pièce à essayer dans cette analyse.'));
+  }
+
+  const body = h('div', { class: 'trial' },
+    h('p', { class: 'small' }, 'Essaie chaque pièce et choisis. Le statut change tout de suite : « Je garde » ajoute « Essayé : va » aux notes, « À vendre » la met dans tes ventes, « Donner » et « Bac textile » la sortent de ta garde-robe. Touche de nouveau le même bouton pour annuler.'),
+    counter, tallies, hideChip, list);
+  paint();
+  fullDialog({ title: 'Mode essayage', body, onClose: () => rerender() });
 }
 
 function saleRow(item) {

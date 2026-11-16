@@ -519,3 +519,26 @@ main[data-route="garde-robe"] ~ #snackbar { bottom: calc(var(--nav-h) + env(safe
 .chat-actions li { display: flex; align-items: flex-start; gap: 4px; }
 .chat-actions.undone { opacity: .6; text-decoration: line-through; }
 .chat-actions .btn { min-height: 36px; margin-top: 4px; padding: 0 8px; }
+
+/* ---------- Mode essayage ---------- */
+.trial { display: grid; gap: 12px; }
+.trial-count { font-weight: 600; margin: 0; font-variant-numeric: tabular-nums; }
+.trial-list { display: grid; gap: 18px; }
+.trial-group { display: grid; gap: 10px; }
+.trial-group h3 { display: flex; align-items: center; gap: 6px; margin: 4px 0 0; }
+.trial-row { display: grid; gap: 10px; padding: 12px; border-radius: 16px; background: var(--md-surface-container-low); border: 1px solid transparent; transition: border-color .2s; }
+.trial-row .list-row { padding: 0; }
+.trial-row strong { display: block; }
+.trial-row p { margin: 4px 0 0; }
+.trial-chips { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.trial-chips .chip { height: 40px; padding: 0 10px; font-size: 14px; justify-content: center; }
+.trial-tally { cursor: default; height: 30px; font-size: 13px; }
+.chip.trial-keep.on, .trial-tally.trial-keep { background: var(--md-primary-container); color: var(--md-on-primary-container); border-color: transparent; }
+.chip.trial-sell.on, .trial-tally.trial-sell { background: var(--md-tertiary-container); color: var(--md-on-tertiary-container); border-color: transparent; }
+.chip.trial-give.on, .trial-tally.trial-give { background: var(--md-secondary-container); color: var(--md-on-secondary-container); border-color: transparent; }
+.chip.trial-bin.on, .trial-tally.trial-bin { background: var(--md-error-container); color: var(--md-on-error-container); border-color: transparent; }
+.trial-row.trial-keep { border-color: var(--md-primary); }
+.trial-row.trial-sell { border-color: var(--md-tertiary); }
+.trial-row.trial-give { border-color: var(--md-secondary); }
+.trial-row.trial-bin { border-color: var(--md-error); }
+.chip:disabled { opacity: .5; }
