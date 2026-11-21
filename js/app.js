@@ -374,12 +374,68 @@ function calendarUrl(tenue) {
 
 async function historyBefore(weekStart) {
   const weeks = (await db.all('weeks')).filter(w => w.weekStart < weekStart).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
-  return weeks.flatMap(w => (w.tenues || []).map(x => ({ label: `${x.key === 'WE' ? 'week-end' : 'semaine'} du ${x.dates[0]}`, itemIds: x.itemIds })))
-    .filter(x => x.itemIds?.length).slice(-12);
+  // Une tenue « non portée » ne compte pas dans la rotation ; « autre » transmet ce qu'il a vraiment porté.
+  return weeks.flatMap(w => (w.tenues || []).map(x => ({
+    label: `${x.key === 'WE' ? 'week-end' : 'semaine'} du ${x.dates[0]}`,
+    itemIds: x.porteReponse === 'non' || x.porteReponse === 'autre' ? [] : x.itemIds,
+    note: x.porteReponse === 'autre' ? x.porteAutre || '' : '',
+  }))).filter(x => x.itemIds?.length || x.note).slice(-12);
+}
+
+// Avant de composer une nouvelle semaine : demander si les tenues passées (non encore renseignées) ont été portées.
+async function wornQuestions(weekStart) {
+  const t = today();
+  const weeks = (await db.all('weeks')).filter(w => w.weekStart < weekStart && w.weekStart >= addDays(weekStart, -14));
+  const out = [];
+  for (const w of weeks) for (const x of w.tenues || []) {
+    if (x.porte || x.porteReponse || !x.itemIds?.length || x.dates[0] > t) continue;
+    out.push({ week: w, tenue: x });
+  }
+  return out.sort((a, b) => a.tenue.dates[0].localeCompare(b.tenue.dates[0]));
+}
+
+async function askWornBefore(weekStart) {
+  for (const { week, tenue } of await wornQuestions(weekStart)) {
+    const answer = await askWorn(tenue);
+    if (!answer) continue;   // fermé sans répondre : on redemandera la prochaine fois
+    if (answer.v === 'oui') { tenue.porte = true; delete tenue.porteReponse; await setWear(tenue.itemIds, tenue.dates, true); }
+    else { tenue.porteReponse = answer.v; if (answer.v === 'autre') tenue.porteAutre = answer.text; }
+    await saveWeek(week);
+  }
+}
+
+function askWorn(tenue) {
+  return new Promise(resolve => {
+    let layer, done = false;
+    const finish = (v) => { if (done) return; done = true; resolve(v); layer.close(); };
+    const items = byId();
+    const names = tenue.itemIds.map(id => items[id]?.nom).filter(Boolean);
+    const ta = h('textarea', { rows: 3, placeholder: 'Ex. même pull, mais la chemise oxford bleu ciel à la place de la blanche' });
+    const other = h('div', { class: 'worn-other', hidden: true },
+      h('label', { class: 'field' }, h('span', {}, 'Qu’as-tu porté à la place ?'), ta),
+      button('Valider', { ic: 'check', cls: 'wide', onclick: () => {
+        const text = ta.value.trim();
+        if (!text) { ta.focus(); return; }
+        finish({ v: 'autre', text });
+      } }));
+    const body = h('div', { class: 'worn-ask' },
+      h('p', {}, h('strong', {}, cleanAI(tenue.titre || 'Tenue')), h('br'), h('span', { class: 'muted small' }, dateRange(tenue.dates))),
+      names.length ? h('p', { class: 'small' }, names.join(' · ')) : null,
+      h('div', { class: 'worn-choices' },
+        button('Oui', { ic: 'check_circle', onclick: () => finish({ v: 'oui' }) }),
+        button('Non', { kind: 'tonal', ic: 'cancel', onclick: () => finish({ v: 'non' }) }),
+        button('Autre', { kind: 'outlined', ic: 'edit', onclick: () => { other.hidden = false; ta.focus(); } })),
+      other);
+    layer = sheet({ title: 'As-tu porté cette tenue ?', body, onClose: () => { if (!done) { done = true; resolve(null); } } });
+  });
 }
 
 async function runGeneration(week, keys, { instruction } = {}) {
   if (state.busy) return;
+  if (!instruction) {
+    state.busy = true;   // évite un second lancement pendant les questions
+    try { await askWornBefore(week.weekStart); } finally { state.busy = false; }
+  }
   state.busy = true;
   const list = document.querySelector('.days');
   list?.prepend(loader(instruction ? 'Le styliste modifie ta tenue…' : 'Le styliste compose ta semaine…'));
@@ -460,6 +516,7 @@ async function setWear(ids, dates, on) {
 
 async function toggleWorn(week, tenue) {
   tenue.porte = !tenue.porte;
+  delete tenue.porteReponse; delete tenue.porteAutre;
   await setWear(tenue.itemIds, tenue.dates, tenue.porte);
   await saveWeek(week);
   rerender();

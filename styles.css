@@ -543,3 +543,8 @@ main[data-route="garde-robe"] ~ #snackbar { bottom: calc(var(--nav-h) + env(safe
 .trial-row.trial-bin { border-color: var(--md-error); }
 .chip:disabled { opacity: .5; }
 .trial-todo { font-weight: 600; color: var(--md-on-surface); margin: 6px 0 0; }
+.worn-ask { display: grid; gap: 12px; }
+.worn-ask p { margin: 0; }
+.worn-choices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.worn-other { display: grid; gap: 8px; }
+.worn-other[hidden] { display: none; }

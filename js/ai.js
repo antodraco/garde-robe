@@ -237,7 +237,7 @@ export async function generateOutfits({ settings, profile, items, slots, weather
   const slotText = slots.map(s =>
     `${s.key} : ${s.label} (${s.dates.length} jour${s.dates.length > 1 ? 's' : ''}${s.key === 'WE' ? ', à la maison' : ''})\n` +
     s.dates.map(d => `   - ${d} (${dayName(d)}) : ${weatherLine(weather?.[d])}`).join('\n')).join('\n');
-  const hist = (history || []).slice(-12).map(h => `${h.label} : ${h.itemIds.join(', ')}`).join('\n') || '(aucun)';
+  const hist = (history || []).slice(-12).map(h => h.itemIds?.length ? `${h.label} : ${h.itemIds.join(', ')}` : `${h.label} : tenue proposée non suivie ; il a porté à la place (selon lui) : « ${h.note} »`).join('\n') || '(aucun)';
   const fixedText = (fixed || []).map(f => `${f.key} (${f.label}) : ${f.itemIds.join(', ')}`).join('\n');
   const text =
 `PROFIL ET GOÛTS
