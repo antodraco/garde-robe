@@ -222,9 +222,8 @@ export async function generateOutfits({ settings, profile, items, slots, weather
   const keys = slots.map(s => s.key);
   const weekdays = slots.filter(s => s.key !== 'WE').length + (fixed || []).filter(f => f.key !== 'WE').length;
   const rules = [
-    'Chaque tenue contient : 1 ou 2 hauts (ex. t-shirt sous une chemise), exactement 1 bas' +
-      (available.has('chaussures') ? ', exactement 1 paire de chaussures' : '') +
-      ', 0 ou 1 maille, 0 à 2 pièces de dessus (ex. blazer + manteau), et des accessoires seulement s’ils sont utiles (écharpe/gants/bonnet par temps froid, ceinture avec un pantalon à passants).',
+    'Chaque tenue contient : des hauts (chemise, polo ou t-shirt) qui se RELAIENT sur la période — 2 ou 3 hauts différents si la période dure 3 jours ou plus (l’utilisateur ne veut pas porter le même haut 5 jours), 1 ou 2 sinon —, exactement 1 bas, 0 ou 1 maille (la même toute la période), 0 à 2 pièces de dessus (ex. blazer + manteau), et des accessoires seulement s’ils sont utiles (écharpe, gants, bonnet par temps froid ; ceinture avec un pantalon à passants). Tous les hauts doivent aller avec la même maille et le même bas.',
+    'Ne mets JAMAIS de chaussures ni de chaussettes dans une tenue : l’utilisateur porte toujours ses derbies (il alterne ses deux paires) et choisit lui-même ses chaussettes chaque jour.',
     'Utilise UNIQUEMENT les identifiants de l’inventaire (ex. « v12 »). Ne cite jamais une pièce absente.',
     'IMPORTANT : chaque tenue est portée PLUSIEURS JOURS DE SUITE (tous les jours de sa période). Choisis des pièces robustes et faciles à porter plusieurs jours, et prévois les couches pour le jour le plus froid et le plus pluvieux de la période (une maille ou une pièce de dessus qu’on peut retirer si un jour est plus doux).',
     weekdays >= 2
@@ -233,7 +232,7 @@ export async function generateOutfits({ settings, profile, items, slots, weather
     'La tenue « WE » (week-end, à la maison) est plus décontractée et confortable.',
     'Varie d’une semaine à l’autre : évite les combinaisons et les hauts de l’historique récent et fais tourner les pièces peu portées.',
     'Respecte strictement les goûts et les interdits du profil, et soigne l’harmonie des couleurs et des niveaux de formalité.',
-    'titre : nom court et évocateur ; explication : 1 à 2 phrases (pourquoi ces pièces vont ensemble et avec la météo de la période). Dans titre et explication, désigne les pièces par leur nom, jamais par leur identifiant (v12…).',
+    'titre : nom court et évocateur ; explication : 2 à 3 phrases (pourquoi ces pièces vont ensemble et avec la météo de la période, et quel haut porter quels jours). Dans titre et explication, désigne les pièces par leur nom, jamais par leur identifiant (v12…).',
   ];
   const slotText = slots.map(s =>
     `${s.key} : ${s.label} (${s.dates.length} jour${s.dates.length > 1 ? 's' : ''}${s.key === 'WE' ? ', à la maison' : ''})\n` +
@@ -267,23 +266,26 @@ Renvoie exactement une tenue pour chacune de ces clés : ${keys.join(', ')}.`;
   };
 
   let res = await run();
-  let problems = validateOutfits(res, keys, byId, available);
+  const days = Object.fromEntries(slots.map(s => [s.key, s.dates.length]));
+  let problems = validateOutfits(res, keys, byId, available, days);
   if (problems.length) {
     res = await run(`\n\nATTENTION, ta proposition précédente avait ces erreurs, corrige-les :\n- ${problems.join('\n- ')}`);
-    problems = validateOutfits(res, keys, byId, available);
+    problems = validateOutfits(res, keys, byId, available, days);
   }
   const tenues = slots.map(s => {
     const t = res.find(x => x.cle === s.key);
     if (!t) return null;
-    const ids = [...new Set(t.itemIds || [])].filter(id => byId[id]);
+    // Jamais de chaussures ni de chaussettes dans la tenue : il porte ses derbies et choisit ses chaussettes.
+    const ids = [...new Set(t.itemIds || [])].filter(id => byId[id] && groupOf(byId[id].categorie) !== 'chaussures' && byId[id].categorie !== 'Chaussettes');
     ids.sort((a, b) => GROUP_ORDER.indexOf(groupOf(byId[a].categorie)) - GROUP_ORDER.indexOf(groupOf(byId[b].categorie)));
     return { key: s.key, dates: s.dates, itemIds: ids, titre: t.titre || 'Tenue', explication: t.explication || '', porte: false };
   }).filter(Boolean);
   return { tenues, problems };
 }
 
-export function validateOutfits(list, keys, byId, available) {
+export function validateOutfits(list, keys, byId, available, days = {}) {
   const problems = [];
+  const nTops = Object.values(byId).filter(i => groupOf(i.categorie) === 'haut').length;
   for (const key of keys) {
     const t = list.find(x => x.cle === key);
     if (!t) { problems.push(`${key} : tenue manquante`); continue; }
@@ -292,9 +294,11 @@ export function validateOutfits(list, keys, byId, available) {
     if (unknown.length) problems.push(`${key} : identifiants inexistants ${unknown.join(', ')}`);
     const groups = {};
     ids.filter(id => byId[id]).forEach(id => { const g = groupOf(byId[id].categorie); groups[g] = (groups[g] || 0) + 1; });
-    if (available.has('haut') && !(groups.haut >= 1 && groups.haut <= 2)) problems.push(`${key} : il faut 1 ou 2 hauts`);
+    const [hMin, hMax] = (days[key] || 1) >= 3 ? [2, 3] : [1, 2];
+    if (available.has('haut') && !((groups.haut || 0) >= Math.min(hMin, nTops) && (groups.haut || 0) <= hMax)) problems.push(`${key} : il faut ${hMin} à ${hMax} hauts qui se relaient sur la période`);
     if (available.has('bas') && groups.bas !== 1) problems.push(`${key} : il faut exactement 1 bas`);
-    if (available.has('chaussures') && groups.chaussures !== 1) problems.push(`${key} : il faut exactement 1 paire de chaussures`);
+    if (groups.chaussures) problems.push(`${key} : ne mets pas de chaussures`);
+    if (ids.some(id => byId[id]?.categorie === 'Chaussettes')) problems.push(`${key} : ne mets pas de chaussettes`);
     if ((groups.maille || 0) > 1) problems.push(`${key} : 1 maille au maximum`);
     if ((groups.dessus || 0) > 2) problems.push(`${key} : 2 pièces de dessus au maximum`);
     const accCats = ids.filter(id => byId[id] && groupOf(byId[id].categorie) === 'accessoire').map(id => byId[id].categorie);
@@ -349,7 +353,7 @@ Principes :
 6. Quand tu proposes une tenue, utilise les noms exacts des pièces de l’inventaire. N’invente jamais une pièce qu’il n’a pas.
 7. Mise en forme légère : phrases courtes, listes seulement quand elles aident, pas de titres pompeux, pas d’emoji.
 8. Désigne toujours les pièces par leur nom (ex. « ton pantalon en flanelle grise »), jamais par leur identifiant technique (v12, v34…).
-9. Tu peux AGIR dans l’application grâce à tes outils : modifier la fiche d’une pièce (y compris son statut : garder, à vendre, donné…), modifier une tenue de la semaine, la marquer portée, changer les remarques de la semaine, modifier le profil (goûts, règles, mensurations, référentiel), ajouter une pièce à la liste d’achats. Quand l’utilisateur te demande un changement, fais-le directement avec l’outil (sans demander la permission), puis dis en une phrase ce que tu as changé. Pour une tenue, garde les pièces qu’il ne remet pas en cause et respecte la météo et ses règles. Si la demande est ambiguë (quelle pièce ? quelle semaine ?), pose une question courte au lieu d’agir. Ne modifie jamais rien de ta propre initiative sans qu’il l’ait demandé ; propose-le plutôt. L’utilisateur peut annuler d’un geste ce que tu as fait.`;
+9. Tu peux AGIR dans l’application grâce à tes outils : modifier la fiche d’une pièce (y compris son statut : garder, à vendre, donné…), modifier une tenue de la semaine, la marquer portée, changer les remarques de la semaine, modifier le profil (goûts, règles, mensurations, référentiel), ajouter une pièce à la liste d’achats. Quand l’utilisateur te demande un changement, fais-le directement avec l’outil (sans demander la permission), puis dis en une phrase ce que tu as changé. Pour une tenue, garde les pièces qu’il ne remet pas en cause et respecte la météo et ses règles ; n’y mets jamais de chaussures ni de chaussettes (il alterne ses deux paires de derbies et choisit ses chaussettes lui-même), et prévois 2 ou 3 hauts qui se relaient quand la tenue dure 3 jours ou plus (même maille, même bas, même manteau toute la semaine). Si la demande est ambiguë (quelle pièce ? quelle semaine ?), pose une question courte au lieu d’agir. Ne modifie jamais rien de ta propre initiative sans qu’il l’ait demandé ; propose-le plutôt. L’utilisateur peut annuler d’un geste ce que tu as fait.`;
 
 // Les identifiants internes (v12, v34…) servent à l'IA pour désigner les pièces ; on ne les montre jamais.
 export function stripIds(t) {
